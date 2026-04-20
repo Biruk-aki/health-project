@@ -1,0 +1,20 @@
+# Zephyr/CMake build artifacts
+build/
+build_*/
+zephyr/
+.project
+.settings/
+
+# Compiler/Object files
+*.o
+*.obj
+*.bin
+*.elf
+*.hex
+
+# IDE specific (VS Code)
+.vscode/
+
+# Python virtual environments (if any)
+.venv/
+__pycache__/
