@@ -2,110 +2,86 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/i2c.h>
 
-// Function to read calibration data from the BME680 sensor
-int bme680_read_calibration_data(struct bme680_dev *dev){
-uint8_t data [2];
-// read par_t1 (unsigned 16-bit) from 0xE9 (LCB) and 0xEA (MSB)
-
-if(i2c_burst_read(dev->i2c_dev, dev->i2c_addr, 0xE9, data, 2) != 0){
-    return -EIO; // I/O error
-
-}
-dev-> calib.par_t1= (uint16_t)data[1] << 8 | data[0]; // Combine MSB and LSB
-
-// read par_t2 (signed 16-bit) from 0x8A (LSB) and 0x8B (MSB)
-if(i2c_burst_read(dev->i2c_dev, dev->i2c_addr, 0x8A, data, 2) != 0){
-    return -EIO; // I/O error
-
-}
-dev-> calib.par_t2= (int16_t)((data[1] << 8 | data[0])); // Combine MSB and LSB
-
-// read par_t3 (signed 8-bit) from 0x8C
-if(i2c_reg_read_byte(dev->i2c_dev, dev->i2c_addr, 0x8C, (uint8_t *)&dev->calib.par_t3) != 0){
-    return -EIO; // I/O error
-
-}return 0; // Success
-
+/**
+ * Sends a single byte of data to a specific register on the sensor.
+ */
+static inline int bme_i2c_write(struct bme680_dev *dev, uint8_t reg, uint8_t val) {
+    return i2c_reg_write_byte(dev->i2c_dev, dev->i2c_addr, reg, val);
 }
 
-// Function to calculate compensated temperature in Celsius (multiplied by 100 for precision)
-int bme680_calculate_temperature(struct bme680_dev *dev, int32_t temp_adc, int32_t *temp_comp) {
-    int32_t var1, var2, var3;
+int bme680_read_calibration_data(struct bme680_dev *dev) {
+    uint8_t d[2];
 
-    // The formula from Bosch Datasheet [cite: 417, 418, 419, 420, 421]
-    var1 = ((int32_t)temp_adc >> 3) - ((int32_t)dev->calib.par_t1 << 1);
-    var2 = (var1 * (int32_t)dev->calib.par_t2) >> 11;
-    var3 = ((((var1 >> 1) * (var1 >> 1)) >> 12) * ((int32_t)dev->calib.par_t3 << 4)) >> 14;
+    /* Reads two bytes starting at 0xE9 and stores them as a 16-bit unsigned integer in par_t1. */
+    if (i2c_burst_read(dev->i2c_dev, dev->i2c_addr, 0xE9, d, 2) ||
+        (dev->calib.par_t1 = (uint16_t)d[1] << 8 | d[0], 0)) return -EIO;
+
+    /* Reads two bytes starting at 0x8A and stores them as a 16-bit signed integer in par_t2. */
+    if (i2c_burst_read(dev->i2c_dev, dev->i2c_addr, 0x8A, d, 2) ||
+        (dev->calib.par_t2 = (int16_t)(d[1] << 8 | d[0]), 0)) return -EIO;
+
+    /* Reads a single byte from 0x8C and stores it as an 8-bit signed integer in par_t3. */
+    return i2c_reg_read_byte(dev->i2c_dev, dev->i2c_addr, 0x8C, (uint8_t *)&dev->calib.par_t3);
+}
+
+int bme680_calculate_temperature(struct bme680_dev *dev, int32_t adc_raw, int32_t *temp_comp) {
+    /* Copies calibration values from the device structure into local variables. */
+    int32_t t1 = (int32_t)dev->calib.par_t1;
+    int32_t t2 = (int32_t)dev->calib.par_t2;
+    int32_t t3 = (int32_t)dev->calib.par_t3;
+
+    /* Implements the Bosch datasheet formula using bit-shifts and integer multiplication. */
+    int32_t v1 = (adc_raw >> 3) - (t1 << 1);
+    int32_t v2 = (v1 * t2) >> 11;
+    int32_t v3 = ((((v1 >> 1) * (v1 >> 1)) >> 12) * (t3 << 4)) >> 14;
     
-    // Calculate t_fine (needed for other sensors later)
-    dev->calib.t_fine = var2 + var3;
+    /* Sums partial results to create the t_fine variable used for multi-sensor compensation. */
+    dev->calib.t_fine = v2 + v3;
     
-    // Final temperature in Celsius (multiplied by 100 for precision in integer)
+    /* Scales the final value to Celsius multiplied by 100. */
     *temp_comp = ((dev->calib.t_fine * 5) + 128) >> 8;
-    
     return 0;
 }
-
-// Initialize the BME680 sensor: Verify Chip ID, read calibration, disable heater, set oversampling
 
 int bme680_init(struct bme680_dev *dev) {
-    uint8_t chip_id;
-    uint8_t reg_val;
+    uint8_t id;
 
-    // 1. Verify Chip ID: Read register 0xD0 [cite: 721]
-    if (i2c_reg_read_byte(dev->i2c_dev, dev->i2c_addr, BME680_REG_CHIP_ID, &chip_id) != 0) {
-        return -EIO;
-    }
-    if (chip_id != BME680_CHIP_ID_VAL) {
-        return -ENODEV; // Wrong chip detected! [cite: 721]
-    }
+    /* Reads the chip ID register and compares it against the expected value of 0x61. */
+    if (i2c_reg_read_byte(dev->i2c_dev, dev->i2c_addr, BME680_REG_CHIP_ID, &id) || id != BME680_CHIP_ID_VAL)
+        return -ENODEV;
 
-    // 2. Soft Reset: Write 0xB6 to 0xE0 [cite: 719]
-    reg_val = 0xB6;
-    i2c_reg_write_byte(dev->i2c_dev, dev->i2c_addr, BME680_REG_RESET, reg_val);
-    k_msleep(10); // Wait for the sensor to wake up again [cite: 218]
+    /* Writes the reset command 0xB6 to the reset register. */
+    bme_i2c_write(dev, BME680_REG_RESET, 0xB6);
+    /* Pauses execution for 10ms to allow the sensor to reboot. */
+    k_msleep(10); 
 
-    // 3. Read Calibration Data [cite: 429]
-    if (bme680_read_calibration(dev) != 0) {
-        return -EIO;
-    }
+    /* Calls the function to populate the calibration structure from sensor memory. */
+    if (bme680_read_calibration_data(dev)) return -EIO;
 
-    // 4. Disable Gas Heater: Set run_gas bit (bit 4) to 0 in register 0x71 [cite: 360, 781]
-    // Also sets nb_conv to 0. This ensures no self-heating [cite: 776]
-    reg_val = 0x00; 
-    i2c_reg_write_byte(dev->i2c_dev, dev->i2c_addr, BME680_REG_CTRL_GAS_1, reg_val);
-
-    // 5. Set Oversampling: Temp x16 for "pure" results [cite: 347, 728]
-    // Register 0x74: osrs_t is bits <7:5>. 0b101 = x16 [cite: 727, 728]
-    // We keep Pressure (bits 4:2) and Mode (bits 1:0) at 0 for now [cite: 734, 706]
-    reg_val = (0x05 << 5); 
-    i2c_reg_write_byte(dev->i2c_dev, dev->i2c_addr, BME680_REG_CTRL_MEAS, reg_val);
+    /* Writes 0x00 to the gas control register to turn off the heating element. */
+    bme_i2c_write(dev, BME680_REG_CTRL_GAS_1, 0x00); 
+    
+    /* Sets the temperature oversampling to x16 in the measurement control register. */
+    bme_i2c_write(dev, BME680_REG_CTRL_MEAS, (0x05 << 5)); 
 
     return 0;
 }
 
-// read function for temperature, returns temp in Celsius as an integer (multiplied by 100 for precision)
 int bme680_read_temperature(struct bme680_dev *dev, int32_t *temp_celsius) {
-    uint8_t data[3];
-    int32_t adc_raw;
+    uint8_t d[3];
 
-    // 1. Trigger Forced Mode: Write 0b01 to mode bits in 0x74 [cite: 367, 705]
-    // We preserve our x16 oversampling (0x05 << 5) [cite: 728]
-    uint8_t ctrl_meas = (0x05 << 5) | 0x01;
-    i2c_reg_write_byte(dev->i2c_dev, dev->i2c_addr, BME680_REG_CTRL_MEAS, ctrl_meas);
-
-    // 2. Wait for measurement to finish (typical time is small) [cite: 218]
+    /* Writes to the control register to put the device into 'Forced Mode' for one reading. */
+    bme_i2c_write(dev, BME680_REG_CTRL_MEAS, (0x05 << 5) | 0x01);
+    
+    /* Waits 20ms for the hardware to complete the analog-to-digital conversion. */
     k_msleep(20); 
 
-    // 3. Read Raw ADC: Registers 0x22, 0x23, 0x24 [cite: 682, 792]
-    if (i2c_burst_read(dev->i2c_dev, dev->i2c_addr, BME680_REG_TEMP_MSB, data, 3) != 0) {
-        return -EIO;
-    }
+    /* Reads 3 bytes of raw ADC data starting from the Temperature MSB register. */
+    if (i2c_burst_read(dev->i2c_dev, dev->i2c_addr, BME680_REG_TEMP_MSB, d, 3)) return -EIO;
 
-    // 4. Assemble the 20-bit ADC value [cite: 792]
-    adc_raw = (int32_t)((data[0] << 12) | (data[1] << 4) | (data[2] >> 4));
-
-    // 5. Apply the math formula we wrote earlier!
+    /* Combines the 3 bytes into a single 20-bit integer. */
+    int32_t adc_raw = (int32_t)(d[0] << 12 | d[1] << 4 | d[2] >> 4);
+    
+    /* Passes the raw value to the math function to get the compensated Celsius result. */
     return bme680_calculate_temperature(dev, adc_raw, temp_celsius);
 }
-//sync test
