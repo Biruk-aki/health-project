@@ -1,0 +1,38 @@
+/ {
+    chosen {
+        zephyr,console = &cdc_acm_uart0;
+    };
+};
+
+&pinctrl {
+    i2c0_default: i2c0_default {
+        group1 {
+            bias-pull-up;
+        };
+    };
+
+    i2c1_default: i2c1_default {
+        group1 {
+            pinmux = <I2C1_SDA_P2>, <I2C1_SCL_P3>;
+            input-enable;
+            bias-pull-up;
+        };
+    };
+};
+
+&i2c0 {
+    status = "okay";
+    clock-frequency = <100000>;
+};
+
+&i2c1 {
+    status = "okay";
+    pinctrl-0 = <&i2c1_default>;
+    pinctrl-names = "default";
+};
+
+&zephyr_udc0 {
+    cdc_acm_uart0: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
+    };
+};
