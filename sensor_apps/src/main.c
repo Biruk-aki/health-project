@@ -193,14 +193,11 @@ int bme680_read_temp(const struct device *i2c_dev, int32_t *temp_out)
 void bme680_thread_fn(void *p1, void *p2, void *p3)
 {
     const struct device *i2c_dev  = DEVICE_DT_GET(DT_NODELABEL(i2c0));
-    const struct device *uart_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
-    uint32_t dtr = 0;
+    
+    
 
-    /* Wait for USB terminal to connect */
-    while (!dtr) {
-        uart_line_ctrl_get(uart_dev, UART_LINE_CTRL_DTR, &dtr);
-        k_sleep(K_MSEC(100));
-    }
+    //* Boot delay — sensor runs without USB connection */
+    k_msleep(2000);
 
     /* Initialize mutex */
     k_mutex_init(&sens_reading.sensor_mtx);
@@ -231,7 +228,7 @@ void bme680_thread_fn(void *p1, void *p2, void *p3)
             printk("ERROR: Failed to read temperature\n");
         }
 
-        k_msleep(5000);
+        k_msleep(3000);
     }
 }
 
@@ -265,7 +262,7 @@ int sensor_node_read_requested_cb(struct i2c_target_config *cfg, uint8_t *val)
         return 0;
     }
 
-    buffer_index = ATOMIC_INIT(0);
+    atomic_set(&buffer_index, 0);  /* reset index */
     uint8_t *data = (uint8_t *)&sens_reading;
     *val = data[sensor_mode];
 
@@ -274,13 +271,13 @@ int sensor_node_read_requested_cb(struct i2c_target_config *cfg, uint8_t *val)
 
 int sensor_node_read_processed_cb(struct i2c_target_config *cfg, uint8_t *val)
 {
-    atomic_inc(&buffer_index);
+    int idx = (int)atomic_inc(&buffer_index) + 1;
 
-    if (buffer_index >= SENS_BUFFER_SIZE) {
+    if (idx >= SENS_BUFFER_SIZE) {
         *val = 0xFF;
     } else {
         uint8_t *data = (uint8_t *)&sens_reading;
-        *val = data[sensor_mode + buffer_index];
+        *val = data[sensor_mode + idx];
     }
 
     return 0;
@@ -288,7 +285,7 @@ int sensor_node_read_processed_cb(struct i2c_target_config *cfg, uint8_t *val)
 
 int sensor_node_stop_cb(struct i2c_target_config *cfg)
 {
-    buffer_index = ATOMIC_INIT(0);
+    atomic_set(&buffer_index, 0);
     return 0;
 }
 
@@ -305,7 +302,7 @@ void i2c_target_thread_fn(void *p1, void *p2, void *p3)
     int err;
     const struct device *i2c_dev = DEVICE_DT_GET(DT_NODELABEL(i2c1));
 
-    struct i2c_target_config i2c_cfg = {
+    static struct i2c_target_config i2c_cfg = {   /* <-- static! */
         .address   = 0x60,
         .callbacks = &sensor_node_callbacks,
     };
@@ -321,7 +318,7 @@ void i2c_target_thread_fn(void *p1, void *p2, void *p3)
         return;
     }
 
-    printk("I2C target registered at address 0x62\n");
+    printk("I2C target registered at address 0x60\n");
 }
 
 // Thread definitions

@@ -23,7 +23,7 @@ int main(void)
         uart_line_ctrl_get(uart_dev, UART_LINE_CTRL_DTR, &dtr);
         k_sleep(K_MSEC(100));
     }
-
+uart_irq_rx_enable(uart_dev);
     /* Setup I2C controller */
     if (!device_is_ready(i2c_dev)) {
         printk("ERROR: I2C not ready\n");

@@ -5,16 +5,22 @@
 };
 
 &pinctrl {
+    /* i2c0 on GP4 (SDA) and GP5 (SCL) — talks to BME680 */
     i2c0_default: i2c0_default {
         group1 {
+            pinmux = <I2C0_SDA_P4>, <I2C0_SCL_P5>;
+            input-enable;
+            input-schmitt-enable;
             bias-pull-up;
         };
     };
 
+    /* i2c1 on GP2 (SDA) and GP3 (SCL) — listens to base node */
     i2c1_default: i2c1_default {
         group1 {
             pinmux = <I2C1_SDA_P2>, <I2C1_SCL_P3>;
             input-enable;
+            input-schmitt-enable;
             bias-pull-up;
         };
     };
@@ -22,6 +28,8 @@
 
 &i2c0 {
     status = "okay";
+    pinctrl-0 = <&i2c0_default>;
+    pinctrl-names = "default";
     clock-frequency = <100000>;
 };
 

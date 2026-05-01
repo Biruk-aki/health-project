@@ -5,8 +5,12 @@
 };
 
 &pinctrl {
+    /* i2c0 on GP4 (SDA) and GP5 (SCL) — talks to sensor node */
     i2c0_default: i2c0_default {
         group1 {
+            pinmux = <I2C0_SDA_P4>, <I2C0_SCL_P5>;
+            input-enable;
+            input-schmitt-enable;
             bias-pull-up;
         };
     };
@@ -14,6 +18,8 @@
 
 &i2c0 {
     status = "okay";
+    pinctrl-0 = <&i2c0_default>;
+    pinctrl-names = "default";
     clock-frequency = <100000>;
 };
 
